@@ -81,4 +81,4 @@ It regenerates `index.html` and commits it back to the repo. Enable **GitHub Pag
 
 ## 📄 License
 
-This project is open source. Data sourced from [BC Open Maps](https://openmaps.gov.bc.ca/).
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. Data sourced from [BC Open Maps](https://openmaps.gov.bc.ca/).
