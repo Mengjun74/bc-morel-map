@@ -1,6 +1,6 @@
 """
-BC Morel Map 2026 — Generator
-Queries BC WFS for 2025 wildfire burn perimeters, excludes protected areas,
+BC Morel Map — Generator
+Queries BC WFS for recent wildfire burn perimeters, excludes protected areas,
 and produces an interactive Folium map saved as index.html.
 """
 
@@ -106,27 +106,27 @@ def geojson_to_gdf(geojson: dict | None) -> gpd.GeoDataFrame | None:
 # Data acquisition
 # ---------------------------------------------------------------------------
 
-def fetch_burn_data() -> gpd.GeoDataFrame | None:
-    """Fetch 2025 wildfire burn perimeters (>20 ha) from both current and
+def fetch_burn_data(target_year: int) -> gpd.GeoDataFrame | None:
+    """Fetch wildfire burn perimeters (>20 ha) for a specific year from both current and
     historical fire layers, merge, and deduplicate."""
 
     # Current fires — field is FIRE_SIZE_HECTARES, FIRE_YEAR
-    current_cql = "FIRE_YEAR=2025 AND FIRE_SIZE_HECTARES>20"
+    current_cql = f"FIRE_YEAR={target_year} AND FIRE_SIZE_HECTARES>20"
     current_gj = fetch_wfs_geojson(CURRENT_FIRES, cql_filter=current_cql)
     gdf_current = geojson_to_gdf(current_gj)
     if gdf_current is not None:
-        log.info("Current fires: %d features", len(gdf_current))
+        log.info("Current fires (%d): %d features", target_year, len(gdf_current))
     else:
-        log.info("Current fires: 0 features (or unavailable)")
+        log.info("Current fires (%d): 0 features (or unavailable)", target_year)
 
     # Historical fires — also uses FIRE_SIZE_HECTARES, FIRE_YEAR
-    hist_cql = "FIRE_YEAR=2025 AND FIRE_SIZE_HECTARES>20"
+    hist_cql = f"FIRE_YEAR={target_year} AND FIRE_SIZE_HECTARES>20"
     hist_gj = fetch_wfs_geojson(HISTORICAL_FIRES, cql_filter=hist_cql)
     gdf_hist = geojson_to_gdf(hist_gj)
     if gdf_hist is not None:
-        log.info("Historical fires: %d features", len(gdf_hist))
+        log.info("Historical fires (%d): %d features", target_year, len(gdf_hist))
     else:
-        log.info("Historical fires: 0 features (or unavailable)")
+        log.info("Historical fires (%d): 0 features (or unavailable)", target_year)
 
     # Merge
     frames = [f for f in [gdf_current, gdf_hist] if f is not None]
@@ -141,7 +141,7 @@ def fetch_burn_data() -> gpd.GeoDataFrame | None:
     if "FIRE_NUMBER" in burns.columns:
         before = len(burns)
         burns = burns.drop_duplicates(subset="FIRE_NUMBER", keep="first")
-        log.info("Deduplicated fires: %d → %d", before, len(burns))
+        log.info("Deduplicated fires (%d): %d → %d", target_year, before, len(burns))
 
     return burns if not burns.empty else None
 
@@ -216,8 +216,10 @@ BC_CITIES = [
 ]
 
 
-def build_map(burns: gpd.GeoDataFrame | None,
-              parks: gpd.GeoDataFrame | None) -> folium.Map:
+def build_map(burns_t1: gpd.GeoDataFrame | None,
+              burns_t2: gpd.GeoDataFrame | None,
+              parks: gpd.GeoDataFrame | None,
+              current_year: int) -> folium.Map:
     """Build the interactive Folium map with all layers and controls."""
 
     # --- Base map -----------------------------------------------------------
@@ -271,12 +273,12 @@ def build_map(burns: gpd.GeoDataFrame | None,
         ).add_to(parks_group)
         parks_group.add_to(m)
 
-    # --- Burn Sites --------------------------------------------------------
-    if burns is not None and not burns.empty:
-        burns_simple = simplify_geometries(burns)
-        burns_group = folium.FeatureGroup(name="🔥 2025 Burn Sites (Morel Zones)")
+    # --- Burn Sites T-1 --------------------------------------------------------
+    if burns_t1 is not None and not burns_t1.empty:
+        burns_simple_t1 = simplify_geometries(burns_t1)
+        burns_group_t1 = folium.FeatureGroup(name=f"🔥 {current_year - 1} Burn Sites (Best Morel Zones)")
 
-        def burn_style(feature):
+        def burn_style_t1(feature):
             return {
                 "fillColor": "#FF8C00",
                 "color": "#CC5500",
@@ -285,8 +287,8 @@ def build_map(burns: gpd.GeoDataFrame | None,
             }
 
         # Build popup fields dynamically based on actual WFS schema
-        popup_fields = []
-        popup_aliases = []
+        popup_fields_t1 = []
+        popup_aliases_t1 = []
         field_map = {
             "FIRE_NUMBER": "Fire #:",
             "FIRE_LABEL": "Fire Label:",
@@ -298,27 +300,66 @@ def build_map(burns: gpd.GeoDataFrame | None,
             "SOURCE": "Source:",
         }
         for col, alias in field_map.items():
-            if col in burns_simple.columns:
-                popup_fields.append(col)
-                popup_aliases.append(alias)
+            if col in burns_simple_t1.columns:
+                popup_fields_t1.append(col)
+                popup_aliases_t1.append(alias)
 
         folium.GeoJson(
-            burns_simple,
-            style_function=burn_style,
+            burns_simple_t1,
+            style_function=burn_style_t1,
             tooltip=folium.GeoJsonTooltip(
-                fields=popup_fields[:3] if popup_fields else [],
-                aliases=popup_aliases[:3] if popup_aliases else [],
+                fields=popup_fields_t1[:3] if popup_fields_t1 else [],
+                aliases=popup_aliases_t1[:3] if popup_aliases_t1 else [],
                 sticky=True,
             ),
             popup=folium.GeoJsonPopup(
-                fields=popup_fields if popup_fields else [],
-                aliases=popup_aliases if popup_aliases else [],
+                fields=popup_fields_t1 if popup_fields_t1 else [],
+                aliases=popup_aliases_t1 if popup_aliases_t1 else [],
                 labels=True,
                 localize=True,
             ),
-            name="Burn Sites",
-        ).add_to(burns_group)
-        burns_group.add_to(m)
+            name=f"{current_year - 1} Burn Sites",
+        ).add_to(burns_group_t1)
+        burns_group_t1.add_to(m)
+
+    # --- Burn Sites T-2 --------------------------------------------------------
+    if burns_t2 is not None and not burns_t2.empty:
+        burns_simple_t2 = simplify_geometries(burns_t2)
+        burns_group_t2 = folium.FeatureGroup(name=f"🔥 {current_year - 2} Burn Sites (Secondary Zones)")
+
+        def burn_style_t2(feature):
+            return {
+                "fillColor": "#FFD700",
+                "color": "#B8860B",
+                "weight": 2,
+                "fillOpacity": 0.5,
+            }
+
+        # Build popup fields dynamically based on actual WFS schema
+        popup_fields_t2 = []
+        popup_aliases_t2 = []
+        for col, alias in field_map.items():
+            if col in burns_simple_t2.columns:
+                popup_fields_t2.append(col)
+                popup_aliases_t2.append(alias)
+
+        folium.GeoJson(
+            burns_simple_t2,
+            style_function=burn_style_t2,
+            tooltip=folium.GeoJsonTooltip(
+                fields=popup_fields_t2[:3] if popup_fields_t2 else [],
+                aliases=popup_aliases_t2[:3] if popup_aliases_t2 else [],
+                sticky=True,
+            ),
+            popup=folium.GeoJsonPopup(
+                fields=popup_fields_t2 if popup_fields_t2 else [],
+                aliases=popup_aliases_t2 if popup_aliases_t2 else [],
+                labels=True,
+                localize=True,
+            ),
+            name=f"{current_year - 2} Burn Sites",
+        ).add_to(burns_group_t2)
+        burns_group_t2.add_to(m)
 
     # --- City markers for search -------------------------------------------
     cities_group = folium.FeatureGroup(name="🏙️ BC Cities", show=False)
@@ -367,7 +408,7 @@ def build_map(burns: gpd.GeoDataFrame | None,
         border-left: 4px solid #FF8C00;
     ">
         <div style="font-size:15px; font-weight:700; margin-bottom:6px; color:#FF8C00;">
-            🍄 BC Morel Map — 2026 Season
+            🍄 BC Morel Map — {current_year} Season
         </div>
         <div style="margin-bottom:4px;">
             ⚠️ <strong>Data for reference only.</strong>
@@ -390,7 +431,7 @@ def build_map(burns: gpd.GeoDataFrame | None,
 
     # Page title
     m.get_root().html.add_child(folium.Element(
-        "<title>BC Morel Map 2026 — Burn Zone Foraging Guide</title>"
+        f"<title>BC Morel Map {current_year} — Burn Zone Foraging Guide</title>"
     ))
 
     return m
@@ -401,28 +442,29 @@ def build_map(burns: gpd.GeoDataFrame | None,
 # ---------------------------------------------------------------------------
 
 def main():
+    current_year = datetime.now(timezone.utc).year
     log.info("=" * 60)
-    log.info("BC Morel Map 2026 — Generator")
+    log.info("BC Morel Map %d — Generator", current_year)
     log.info("=" * 60)
 
     # 1. Fetch data
-    burns_raw = fetch_burn_data()
+    burns_t1_raw = fetch_burn_data(current_year - 1)
+    burns_t2_raw = fetch_burn_data(current_year - 2)
     parks = fetch_parks()
 
-    if burns_raw is None:
+    if burns_t1_raw is None and burns_t2_raw is None:
         log.warning(
-            "No 2025 burn data available yet. This is expected early in the "
-            "season — the map will be generated with parks only."
+            "No burn data available for %d and %d. "
+            "The map will be generated with parks only.",
+            current_year - 1, current_year - 2
         )
 
     # 2. Subtract parks from burns
-    if burns_raw is not None:
-        burns = subtract_parks(burns_raw, parks)
-    else:
-        burns = None
+    burns_t1 = subtract_parks(burns_t1_raw, parks) if burns_t1_raw is not None else None
+    burns_t2 = subtract_parks(burns_t2_raw, parks) if burns_t2_raw is not None else None
 
     # 3. Build map
-    m = build_map(burns, parks)
+    m = build_map(burns_t1, burns_t2, parks, current_year)
 
     # 4. Save
     m.save(OUTPUT_FILE)
